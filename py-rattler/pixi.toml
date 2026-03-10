@@ -17,7 +17,7 @@ backend = { name = "pixi-build-python", version = "*" }
 [package.host-dependencies]
 maturin = "*"
 python = "*"
-[package.target.osx.build-dependencies]
+[package.build-dependencies]
 clangdev = "*"
 [package.build.config]
 compilers = ["c", "rust"]
