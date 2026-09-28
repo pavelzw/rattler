@@ -418,9 +418,27 @@ pub trait Matches<T> {
     fn matches(&self, other: &T) -> bool;
 }
 
+/// Returns whether `record` declares every extra in `extras`.
+///
+/// `extra_depends` is the authoritative list of extras a record provides, so a
+/// record that does not declare a requested extra cannot satisfy a spec that
+/// asks for it. Without this check a consumer is free to pick a version that
+/// does not know the extra at all, which silently drops the extra's
+/// dependencies.
+fn record_declares_extras(extras: Option<&Vec<String>>, record: &PackageRecord) -> bool {
+    extras
+        .into_iter()
+        .flatten()
+        .all(|extra| record.extra_depends.contains_key(extra))
+}
+
 impl Matches<PackageRecord> for NamelessMatchSpec {
     /// Match a [`NamelessMatchSpec`] against a [`PackageRecord`]
     fn matches(&self, other: &PackageRecord) -> bool {
+        if !record_declares_extras(self.extras.as_ref(), other) {
+            return false;
+        }
+
         if let Some(spec) = self.version.as_ref()
             && !spec.matches(&other.version)
         {
@@ -491,6 +509,10 @@ impl Matches<PackageRecord> for MatchSpec {
     /// Match a [`MatchSpec`] against a [`PackageRecord`]
     fn matches(&self, other: &PackageRecord) -> bool {
         if !self.name.matches(&other.name) {
+            return false;
+        }
+
+        if !record_declares_extras(self.extras.as_ref(), other) {
             return false;
         }
 
@@ -688,6 +710,7 @@ pub enum MatchSpecUrlError {
 mod tests {
     use itertools::Itertools;
     use rstest::rstest;
+    use std::collections::BTreeMap;
     use std::str::FromStr;
 
     use rattler_digest::{Md5, Sha256, parse_digest_from_hex};
@@ -1118,6 +1141,42 @@ mod tests {
 
         let spec = MatchSpec::from_str(spec_str, Strict).unwrap();
         assert_eq!(spec.matches(&virtual_package), expected);
+    }
+
+    #[test]
+    fn test_extras_match() {
+        let v3 = ParseMatchSpecOptions::lenient().with_repodata_revision(RepodataRevision::V3);
+
+        let record_with = |extras: &[&str]| PackageRecord {
+            extra_depends: extras
+                .iter()
+                .map(|extra| ((*extra).to_string(), Vec::new()))
+                .collect::<BTreeMap<_, _>>(),
+            ..PackageRecord::new(
+                PackageName::new_unchecked("black"),
+                Version::from_str("25.0.0").unwrap(),
+                String::from("pyh_0"),
+            )
+        };
+
+        let spec = MatchSpec::from_str("black[extras=[d,jupyter]]", v3).unwrap();
+        assert!(spec.matches(&record_with(&["d", "jupyter"])));
+        // A record that only declares one of the requested extras cannot
+        // satisfy the spec; the other extra's dependencies would be dropped.
+        assert!(!spec.matches(&record_with(&["d"])));
+        assert!(!spec.matches(&record_with(&[])));
+
+        // Without extras the check is inert.
+        let spec = MatchSpec::from_str("black", v3).unwrap();
+        assert!(spec.matches(&record_with(&[])));
+        assert!(spec.matches(&record_with(&["d"])));
+
+        // The same rule applies to a nameless spec.
+        let (_, nameless) = MatchSpec::from_str("black[extras=[d]]", v3)
+            .unwrap()
+            .into_nameless();
+        assert!(nameless.matches(&record_with(&["d"])));
+        assert!(!nameless.matches(&record_with(&[])));
     }
 
     #[test]
